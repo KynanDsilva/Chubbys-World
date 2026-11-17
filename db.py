@@ -20,7 +20,7 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
 
 def get_connection(db_path: str | Path) -> sqlite3.Connection:
     """Open a SQLite connection configured with row access by column name."""
-    conn = sqlite3.connect(str(db_path))
+    conn = sqlite3.connect(str(db_path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -63,7 +63,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             text TEXT NOT NULL,
             received_tick INTEGER NOT NULL,
-            read INTEGER NOT NULL DEFAULT 0
+            read INTEGER NOT NULL DEFAULT 0,
+            drawing TEXT NOT NULL DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS diary (
@@ -96,6 +97,90 @@ def init_db(conn: sqlite3.Connection) -> None:
             unlocks TEXT NOT NULL,
             created_tick INTEGER NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS drawings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tick INTEGER,
+            title TEXT,
+            svg TEXT,
+            created_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS meta (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        );
+
+        DROP TRIGGER IF EXISTS keep_only_solar_at_tick0;
+        """
+    )
+    msg_cols = {
+        (row[1] if isinstance(row, tuple) else row["name"])
+        for row in conn.execute("PRAGMA table_info(messages)").fetchall()
+    }
+    if "drawing" not in msg_cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN drawing TEXT NOT NULL DEFAULT ''")
+    drawing_cols = {
+        (row[1] if isinstance(row, tuple) else row["name"])
+        for row in conn.execute("PRAGMA table_info(drawings)").fetchall()
+    }
+    if "location" not in drawing_cols:
+        conn.execute(
+            "ALTER TABLE drawings ADD COLUMN location TEXT NOT NULL DEFAULT 'Art Studio'"
+        )
+    conn.commit()
+    _run_town_revamp_migration(conn)
+
+
+TOWN_REVAMP_MARKER = "town_revamp_v1"
+
+
+def _run_town_revamp_migration(conn: sqlite3.Connection) -> None:
+    """One-time: drop old built structures and old requests (backing up the file first)."""
+    if conn.execute(
+        "SELECT 1 FROM meta WHERE key = ?", (TOWN_REVAMP_MARKER,)
+    ).fetchone():
+        return
+    has_old = conn.execute(
+        "SELECT (SELECT COUNT(*) FROM structures WHERE created_tick != 0) "
+        "+ (SELECT COUNT(*) FROM requests)"
+    ).fetchone()[0]
+    if has_old:
+        db_file = ""
+        for row in conn.execute("PRAGMA database_list").fetchall():
+            if row[1] == "main":
+                db_file = row[2]
+        if db_file and Path(db_file).exists():
+            bak = Path(db_file + ".bak")
+            if not bak.exists():
+                dest = sqlite3.connect(str(bak))
+                try:
+                    conn.backup(dest)
+                finally:
+                    dest.close()
+        conn.execute("DELETE FROM structures WHERE created_tick != 0")
+        conn.execute("DELETE FROM requests")
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?, '1')",
+        (TOWN_REVAMP_MARKER,),
+    )
+    conn.commit()
+
+
+def reset_db(conn: sqlite3.Connection) -> None:
+    """Clear all simulation data from all tables while preserving schema."""
+    conn.executescript(
+        """
+        DELETE FROM state;
+        DELETE FROM actions;
+        DELETE FROM events;
+        DELETE FROM messages;
+        DELETE FROM diary;
+        DELETE FROM memories;
+        DELETE FROM requests;
+        DELETE FROM structures;
+        DELETE FROM drawings;
+        DELETE FROM sqlite_sequence;
         """
     )
     conn.commit()
@@ -241,14 +326,28 @@ def get_all_events(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return _rows_to_dicts(rows)
 
 
-def insert_message(conn: sqlite3.Connection, text: str, received_tick: int) -> int:
+def insert_message(
+    conn: sqlite3.Connection, text: str, received_tick: int, drawing: str = ""
+) -> int:
     """Insert a new unread visitor message into the inbox."""
     cur = conn.execute(
-        "INSERT INTO messages (text, received_tick, read) VALUES (?, ?, 0)",
-        (text, received_tick),
+        "INSERT INTO messages (text, received_tick, read, drawing) VALUES (?, ?, 0, ?)",
+        (text, received_tick, drawing),
     )
     conn.commit()
     return int(cur.lastrowid)
+
+
+def get_recent_messages(
+    conn: sqlite3.Connection, limit: int = 10
+) -> list[dict[str, Any]]:
+    """Return the most recent visitor messages ordered newest-first."""
+    if limit <= 0:
+        return []
+    rows = conn.execute(
+        "SELECT * FROM messages ORDER BY id DESC LIMIT ?", (limit,)
+    ).fetchall()
+    return _rows_to_dicts(rows)
 
 
 def get_unread_messages(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -411,3 +510,53 @@ def get_structures(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute("SELECT * FROM structures ORDER BY id ASC").fetchall()
     return _rows_to_dicts(rows)
 
+
+
+def count_actions_mentioning(conn: sqlite3.Connection, keyword: str) -> int:
+    """Count logged actions whose intent mentions `keyword` (case-insensitive)."""
+    row = conn.execute(
+        "SELECT COUNT(*) FROM actions WHERE LOWER(detail) LIKE ?",
+        (f"%{keyword.lower()}%",),
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def insert_drawing(
+    conn: sqlite3.Connection,
+    tick: int,
+    title: str,
+    svg: str,
+    location: str = "Art Studio",
+) -> int:
+    """Store one of Chubby's SVG sketches, including the wall location where it is displayed."""
+    cur = conn.execute(
+        "INSERT INTO drawings (tick, title, svg, location, created_at) "
+        "VALUES (?, ?, ?, ?, datetime('now'))",
+        (tick, title, svg, location),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def update_drawing_location(
+    conn: sqlite3.Connection, drawing_id: int, location: str
+) -> None:
+    """Move or hang a drawing on a specific wall."""
+    conn.execute(
+        "UPDATE drawings SET location = ? WHERE id = ?",
+        (location, drawing_id),
+    )
+    conn.commit()
+
+
+def get_recent_drawings(
+    conn: sqlite3.Connection, limit: int = 15
+) -> list[dict[str, Any]]:
+    """Return the newest `limit` drawings, newest first."""
+    if limit <= 0:
+        return []
+    rows = conn.execute(
+        "SELECT id, tick, title, svg, location, created_at FROM drawings ORDER BY id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return _rows_to_dicts(rows)

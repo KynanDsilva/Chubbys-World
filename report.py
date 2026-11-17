@@ -25,7 +25,6 @@ def generate_report(conn: sqlite3.Connection, cfg: dict[str, Any]) -> dict[str, 
     categories = [a["action"] for a in actions]
     intents = [a["detail"] for a in actions]
 
-    # 1. Distinct categories in 100-tick windows + unique intent ratio
     overall_distinct_categories = len(set(categories))
     if total_ticks >= 100:
         window_counts = [
@@ -42,7 +41,6 @@ def generate_report(conn: sqlite3.Connection, cfg: dict[str, Any]) -> dict[str, 
         round((unique_intents / total_ticks) * 100.0, 2) if total_ticks > 0 else 0.0
     )
 
-    # 2. Longest streak of the same category
     longest_streak = 0
     current_streak = 0
     prev_cat: str | None = None
@@ -54,7 +52,6 @@ def generate_report(conn: sqlite3.Connection, cfg: dict[str, Any]) -> dict[str, 
             prev_cat = cat
         longest_streak = max(longest_streak, current_streak)
 
-    # 3. Diary entries with high similarity to any previous entry (Jaccard > 0.6)
     sim_threshold = float(cfg["antirepeat"]["similarity_threshold"])
     high_sim_count = 0
     diary_texts = [d["text"] for d in diary]
@@ -71,7 +68,6 @@ def generate_report(conn: sqlite3.Connection, cfg: dict[str, Any]) -> dict[str, 
         else 0.0
     )
 
-    # 4. Mood stays between 0.2 and 0.9
     sim_states = [s for s in states if int(s["tick"]) >= 1]
     if not sim_states:
         sim_states = states
@@ -80,7 +76,6 @@ def generate_report(conn: sqlite3.Connection, cfg: dict[str, Any]) -> dict[str, 
         round((in_range / len(sim_states)) * 100.0, 2) if sim_states else 0.0
     )
 
-    # 5. Invalid or rejected LLM outputs
     llm_failures = sum(1 for ev in events if ev["type"] == "llm_failure")
     llm_fallbacks = sum(1 for ev in events if ev["type"] == "llm_fallback")
     total_llm_attempts = max(1, total_ticks * 2 + llm_failures)
@@ -90,11 +85,9 @@ def generate_report(conn: sqlite3.Connection, cfg: dict[str, Any]) -> dict[str, 
         else 0.0
     )
 
-    # 6. Genesis requests
     genesis_ticks = int(cfg["genesis"]["genesis_ticks"])
     genesis_requests = [r for r in requests if int(r["tick"]) <= genesis_ticks]
 
-    # 7. Category breakdown and self-discovery notes
     category_counts = dict(Counter(categories))
     self_discoveries: list[str] = []
     for mem in memories:
@@ -102,7 +95,6 @@ def generate_report(conn: sqlite3.Connection, cfg: dict[str, Any]) -> dict[str, 
             if "self-discovery:" in line.lower() or "learned about myself" in line.lower():
                 self_discoveries.append(line.strip())
 
-    # Check whether mood or any need got permanently stuck near 0 or 1
     latest_state = states[-1] if states else None
     event_counts = dict(Counter(ev["type"] for ev in events))
 
@@ -143,6 +135,7 @@ def generate_report(conn: sqlite3.Connection, cfg: dict[str, Any]) -> dict[str, 
 def format_report(metrics: dict[str, Any]) -> str:
     """Format computed metrics into a readable terminal report."""
     t = metrics["targets_met"]
+
     def _mark(flag: bool) -> str:
         return "PASS" if flag else "MISS"
 
@@ -194,4 +187,3 @@ def format_report(metrics: dict[str, Any]) -> str:
             lines.append(f"  - [{entry['sim_time']} | tick {entry['tick']}] {entry['text']}")
 
     return "\n".join(lines)
-

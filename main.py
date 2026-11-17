@@ -19,10 +19,27 @@ import memory
 import prompt
 import referee
 import state
+from svg_utils import sanitize_svg
+
+STARTER_STRUCTURES: tuple[tuple[str, str], ...] = (
+    (
+        "Art Studio",
+        "Draw sketches on an easel and hang them in the gallery",
+    ),
+)
+
+
+def ensure_starter_structures(conn: sqlite3.Connection) -> None:
+    """Seed the starter Art Studio at tick 0."""
+    existing = {s["name"].lower() for s in db.get_structures(conn)}
+    for name, unlocks in STARTER_STRUCTURES:
+        if name.lower() not in existing:
+            db.insert_structure(conn, name, unlocks, created_tick=0)
 
 
 def ensure_initial_state(conn: sqlite3.Connection, cfg: dict[str, Any]) -> state.WorldState:
-    """Return the latest state, initializing tick 0 if the database is empty."""
+    """Return the latest state, initializing tick 0 and starter structures if missing."""
+    ensure_starter_structures(conn)
     latest = db.get_latest_state(conn)
     if latest is None:
         initial = state.create_initial_state(cfg)
@@ -44,7 +61,6 @@ def run_single_tick(
     sim_time = state.format_sim_time(tick, cfg)
     current_state = prev_state.model_copy(update={"tick": tick, "sim_time": sim_time})
 
-    # 1. Roll at most one random external event
     rolled_event = events.roll_random_event(conn, tick, cfg, rng)
     if rolled_event is not None:
         current_state = state.apply_deltas(
@@ -54,7 +70,6 @@ def run_single_tick(
             cfg=cfg,
         )
 
-    # 2. Gather grounded history, anti-repeat constraints, unread inbox, and genesis quota
     recent_prompt_actions = db.get_recent_actions(
         conn, int(cfg["memory"]["prompt_recent_actions"])
     )
@@ -71,6 +86,10 @@ def run_single_tick(
     allowed_categories = antirepeat.get_allowed_categories(
         recent_categories, int(cfg["antirepeat"]["block_last_n"])
     )
+    if policy != "random":
+        allowed_categories = antirepeat.filter_categories_for_state(
+            allowed_categories, current_state, recent_categories
+        )
     unread_messages = db.get_unread_messages(conn)
     has_unread = len(unread_messages) > 0
     newly_read_messages = memory.get_newly_read_messages_for_prompt(conn, tick)
@@ -80,7 +99,6 @@ def run_single_tick(
     recent_diary = db.get_recent_diary(conn, int(cfg["memory"]["prompt_recent_diary"]))
     memories = db.get_memories(conn, limit=3)
 
-    # 3. Decision call (or random policy)
     decision_fallback = False
     if policy == "random":
         category = rng.choice(allowed_categories)
@@ -106,8 +124,13 @@ def run_single_tick(
             unread_count=len(unread_messages),
             newly_read_messages=newly_read_messages,
             cfg=cfg,
+            allow_structure_request=allow_structure,
+            helicopter_visits=db.count_actions_mentioning(conn, "helicopter"),
         )
-        requested_names = [r["name"] for r in db.get_requests(conn)]
+        requested_names = list(
+            {r["name"] for r in db.get_requests(conn)}
+            | {s["name"] for s in structures}
+        )
         decision_obj, decision_fallback = llm_client.decide(
             decision_messages,
             decision_model,
@@ -130,14 +153,71 @@ def run_single_tick(
         should_read_messages = bool(getattr(decision_obj, "read_messages", False))
         structure_req = getattr(decision_obj, "structure", None)
 
-    # 4. Step 1 of two-step read_messages flow
+        if policy == "llm":
+            sim_threshold = 0.75
+            high_sim = (
+                antirepeat.max_intent_similarity(intent, recent_intents[-4:])
+                > sim_threshold
+            )
+            if high_sim:
+                best_intent = intent
+                best_thought = thought
+                best_sim = 2.0
+                for attempt in range(2):
+                    fresh_client = llm.MockLLMClient(
+                        cfg, seed=tick * 31 + attempt * 97 + rng.randint(1, 1000)
+                    )
+                    alt_obj, _ = fresh_client.decide(
+                        decision_messages,
+                        decision_model,
+                        [category],
+                        tick=tick + attempt,
+                        context={
+                            "state": current_state,
+                            "sim_time": sim_time,
+                            "recent_categories": recent_categories,
+                            "structures": structures,
+                            "newly_read_messages": newly_read_messages,
+                            "active_events": active_events,
+                            "requested_names": requested_names,
+                        },
+                    )
+                    alt_intent = str(getattr(alt_obj, "intent"))
+                    alt_sim = antirepeat.max_intent_similarity(
+                        alt_intent, recent_intents[-4:]
+                    )
+                    if alt_sim < best_sim:
+                        best_sim = alt_sim
+                        best_intent = alt_intent
+                        best_thought = str(getattr(alt_obj, "thought"))
+                    if alt_sim <= sim_threshold:
+                        break
+                intent = best_intent
+                thought = best_thought
+
+        if allow_structure and structure_req is None and policy == "mock":
+            genesis_ticks = int(cfg["genesis"]["genesis_ticks"])
+            requested_names_lower = {
+                r["name"].lower()
+                for r in db.get_requests(conn)
+                if r["status"] in ("pending", "approved")
+            } | {s["name"].lower() for s in structures}
+            if tick <= genesis_ticks or len(db.get_requests(conn, status="pending")) == 0:
+                for candidate in llm.MockLLMClient._GENESIS_STRUCTURES:
+                    if candidate["name"].lower() not in requested_names_lower:
+                        structure_req = llm.StructureRequestSchema(**candidate)
+                        break
+
     read_texts: list[str] = []
     extra_belonging = 0.0
+    draw_downgrade_note: str | None = None
+    category, draw_downgrade_note = referee.gate_draw_category(
+        category, intent, structures, recent_categories=recent_categories
+    )
     if should_read_messages and has_unread:
         read_texts = memory.process_read_messages(conn, tick)
         extra_belonging = 0.20
 
-    # 5. Record structure request if permitted and supplied
     recorded_request_id: int | None = None
     if structure_req is not None and allow_structure:
         recorded_request_id = genesis.record_structure_request(
@@ -149,7 +229,23 @@ def run_single_tick(
             priority=structure_req.priority,
         )
 
-    # 6. Referee resolution + deterministic caps/noise
+    if (
+        referee.has_curiosity_structure(structures)
+        and category in ("explore", "reflect", "make")
+        and (recorded_request_id is not None or tick % 8 == 0)
+    ):
+        db.insert_event(
+            conn,
+            tick,
+            "curiosity_discovery",
+            {
+                "description": (
+                    "Using his curiosity structure, Chubby spots new details "
+                    "and sketches fresh blueprint ideas for the yard."
+                )
+            },
+        )
+
     is_raining_now = events.is_raining(conn, tick, cfg)
     ref_fallback = False
     if policy == "random":
@@ -182,6 +278,69 @@ def run_single_tick(
             rng,
         )
 
+    if draw_downgrade_note:
+        outcome_dict["outcome"] = f"{outcome_dict['outcome']} {draw_downgrade_note}"
+
+    drawing_info: dict[str, Any] | None = None
+    if category == "draw" and not outcome_dict.get("is_impossible"):
+        existing = db.get_recent_drawings(conn, 5)
+        ctx = {
+            "state": current_state,
+            "recent_titles": [d["title"] for d in existing],
+            "drawing_count": int(
+                conn.execute("SELECT COUNT(*) FROM drawings").fetchone()[0]
+            ),
+        }
+        if llm_client is not None and hasattr(llm_client, "generate_drawing"):
+            drawing = llm_client.generate_drawing(intent, tick, ctx)
+        else:
+            drawing = llm.safe_procedural_drawing(
+                tick * 1009 + ctx["drawing_count"], intent=intent
+            )
+        svg_clean = sanitize_svg(drawing.get("svg", ""))
+        if svg_clean is None:
+            drawing = llm.safe_procedural_drawing(
+                tick * 1009 + ctx["drawing_count"], intent=intent
+            )
+            svg_clean = drawing["svg"]
+        title = str(drawing.get("title") or "Untitled Sketch").strip()[:60]
+        lowered_intent = intent.lower()
+        wall_target: str | None = None
+        for kw, loc in [
+            ("bakery", "Bakery"),
+            ("library", "Library"),
+            ("cafe", "Cafe"),
+            ("workshop", "Workshop"),
+            ("post office", "Post Office"),
+            ("apartment", "Apartments"),
+            ("fence", "Perimeter Wall"),
+            ("studio", "Art Studio"),
+            ("easel", "Art Studio"),
+            ("gallery", "Art Studio"),
+        ]:
+            if kw in lowered_intent:
+                wall_target = loc
+                break
+        if not wall_target:
+            town_rotation = [
+                "Bakery",
+                "Library",
+                "Cafe",
+                "Workshop",
+                "Post Office",
+                "Apartments",
+                "Art Studio",
+            ]
+            wall_target = town_rotation[ctx["drawing_count"] % len(town_rotation)]
+
+        drawing_id = db.insert_drawing(conn, tick, title, svg_clean, location=wall_target)
+        drawing_info = {"id": drawing_id, "title": title, "location": wall_target}
+        outcome_dict["outcome"] = (
+            f"{outcome_dict['outcome']} He finished a sketch called '{title}' "
+            f"and put it up on the {wall_target} wall."
+        )
+        outcome_dict["drawing"] = drawing_info
+
     if read_texts:
         joined = " | ".join(read_texts)
         outcome_dict["outcome"] = (
@@ -189,7 +348,6 @@ def run_single_tick(
         )
         outcome_dict["read_messages"] = read_texts
 
-    # 7. Anti-repetition penalties/bonuses, passive decay, and final need deltas
     anti_info = antirepeat.evaluate_antirepeat(
         category, intent, recent_categories, recent_intents, cfg
     )
@@ -203,7 +361,6 @@ def run_single_tick(
         cfg=cfg,
     )
 
-    # 8. Persist state, action, diary, and periodic memory summarization
     state_dict = final_state.model_dump()
     db.insert_state(conn, state_dict)
     db.insert_action(conn, tick, category, intent, thought, outcome_dict, state_dict)
@@ -228,12 +385,14 @@ def run_single_tick(
         "decision_fallback": decision_fallback,
         "ref_fallback": ref_fallback,
         "state": state_dict,
+        "drawing": drawing_info,
     }
 
 
-def _build_llm_client(
+def build_llm_client(
     policy: str, cfg: dict[str, Any], conn: sqlite3.Connection, rng: random.Random
 ) -> Any:
+    """Instantiate the requested LLM or local policy client."""
     if policy == "llm":
         return llm.OllamaClient(cfg, conn=conn)
     if policy == "mock":
@@ -294,7 +453,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         db.init_db(conn)
         ensure_initial_state(conn, cfg)
-        llm_client = _build_llm_client(args.policy, cfg, conn, rng)
+        llm_client = build_llm_client(args.policy, cfg, conn, rng)
 
         completed = 0
         while args.ticks <= 0 or completed < args.ticks:
@@ -325,4 +484,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

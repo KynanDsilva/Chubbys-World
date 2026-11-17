@@ -197,4 +197,3 @@ def apply_deltas(
     }
     new_modifier = state.mood_modifier + float(mood_mod_delta)
     return _with_recomputed(state, updated, new_modifier, cfg)
-

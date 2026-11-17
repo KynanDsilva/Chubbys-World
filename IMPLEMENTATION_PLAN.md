@@ -320,4 +320,3 @@ Iteration 1 is complete when:
 * Per-visitor memory and promises
 * A basic 3D or 2D scene with a procedural Chubby and a day and night cycle
 * A "leave him something" form with moderation
-

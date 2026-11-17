@@ -5,4 +5,11 @@ __pycache__/
 *.sqlite-journal
 *.sqlite-wal
 *.sqlite-shm
-
+node_modules/
+.next/
+.next-dev/
+out/
+next-env.d.ts
+*.tsbuildinfo
+*.bak
+scratch/

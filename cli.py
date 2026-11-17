@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 
 import db
 import genesis
@@ -20,7 +19,7 @@ def _open_db(db_path: str | None, cfg_path: str | None):
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    cfg, conn = _open_db(args.db, args.config)
+    _, conn = _open_db(args.db, args.config)
     try:
         latest = db.get_latest_state(conn)
         if latest is None:
@@ -207,4 +206,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

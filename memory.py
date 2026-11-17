@@ -96,4 +96,3 @@ def maybe_summarize_memory(
     )
     db.insert_memory(conn, tick_range, combined)
     return combined
-

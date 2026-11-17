@@ -1,4 +1,4 @@
-"""Random external events and active weather tracking."""
+"""Random external events tracking."""
 
 from __future__ import annotations
 
@@ -12,11 +12,8 @@ from state import is_dusk
 
 
 def is_raining(conn: sqlite3.Connection, current_tick: int, cfg: dict[str, Any]) -> bool:
-    """Return True if a rain event started recently enough to still be active."""
-    duration = int(cfg["events"]["rain_duration_ticks"])
-    since_tick = max(1, current_tick - duration + 1)
-    rain_events = db.get_recent_events(conn, since_tick=since_tick, event_type="rain")
-    return any(ev["tick"] <= current_tick for ev in rain_events)
+    """Weather has been removed from the world; always return False."""
+    return False
 
 
 def roll_random_event(
@@ -27,18 +24,11 @@ def roll_random_event(
 ) -> dict[str, Any] | None:
     """Roll for at most one random external event on the current tick."""
     ev_cfg = cfg["events"]
-    candidates: list[tuple[str, float]] = []
-
-    if not is_raining(conn, tick, cfg):
-        candidates.append(("rain", float(ev_cfg["rain_chance"])))
-
-    candidates.extend(
-        [
-            ("power_flicker", float(ev_cfg["power_flicker_chance"])),
-            ("lucky_find", float(ev_cfg["lucky_find_chance"])),
-            ("glitch", float(ev_cfg["glitch_chance"])),
-        ]
-    )
+    candidates: list[tuple[str, float]] = [
+        ("power_flicker", float(ev_cfg["power_flicker_chance"])),
+        ("lucky_find", float(ev_cfg["lucky_find_chance"])),
+        ("glitch", float(ev_cfg["glitch_chance"])),
+    ]
 
     if is_dusk(tick, cfg):
         candidates.append(("warm_evening", float(ev_cfg["warm_evening_chance"])))
@@ -56,18 +46,13 @@ def roll_random_event(
         return None
 
     effects_map: dict[str, dict[str, Any]] = {
-        "rain": {
-            "description": "A steady rain begins to fall over the scrapyard.",
-            "deltas": {"calm": 0.03},
-            "mood_mod_delta": 0.0,
-        },
         "power_flicker": {
             "description": "A sudden power flicker surges through the scrapyard grid.",
             "deltas": {"battery": -0.05, "calm": -0.03},
             "mood_mod_delta": 0.0,
         },
         "lucky_find": {
-            "description": "Chubby spots a shiny spare coil tucked beside a crate.",
+            "description": "Chubby spots a shiny spare copper coil half-buried in the gravel.",
             "deltas": {"joy": 0.06, "curiosity": 0.05},
             "mood_mod_delta": 0.0,
         },
@@ -96,10 +81,8 @@ def roll_random_event(
 def get_active_event_descriptions(
     conn: sqlite3.Connection, tick: int, cfg: dict[str, Any]
 ) -> list[str]:
-    """Build grounded descriptions of active weather and events for the prompt."""
+    """Build grounded descriptions of active events for the prompt."""
     descriptions: list[str] = []
-    if is_raining(conn, tick, cfg):
-        descriptions.append("Rain is falling steadily over the scrapyard.")
 
     for ev in db.get_events_for_tick(conn, tick):
         if ev["type"] == "rain":

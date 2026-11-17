@@ -25,18 +25,18 @@ initial_joy = 0.70
 initial_calm = 0.75
 initial_belonging = 0.65
 initial_mood_modifier = 0.0
-decay_battery = 0.020
-decay_curiosity = 0.015
-decay_joy = 0.015
-decay_calm = 0.010
-decay_belonging = 0.012
+decay_battery = 0.024
+decay_curiosity = 0.021
+decay_joy = 0.022
+decay_calm = 0.016
+decay_belonging = 0.013
 mood_modifier_min = -0.30
 mood_modifier_max = 0.30
 mood_modifier_decay = 0.10
 
 [referee]
 max_need_delta = 0.15
-max_battery_recovery_boosted = 0.22
+max_battery_recovery_boosted = 0.20
 noise_min = 0.7
 noise_max = 1.3
 night_activity_battery_cost = 0.02
@@ -75,4 +75,3 @@ summarize_every_ticks = 50
 
 [database]
 path = "chubby.sqlite"
-

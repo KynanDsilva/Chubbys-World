@@ -1,4 +1,4 @@
-"""Genesis infrastructure requests, daily quota enforcement, and terminal approval/rejection."""
+"""Genesis infrastructure requests, daily quota enforcement, and terminal/web approval/rejection."""
 
 from __future__ import annotations
 
@@ -12,11 +12,7 @@ from state import WorldState, apply_deltas
 def can_request_structure(
     conn: sqlite3.Connection, tick: int, cfg: dict[str, Any]
 ) -> bool:
-    """Return True if Chubby is permitted to submit a structure request on `tick`.
-
-    Always allowed during Genesis (ticks 1..genesis_ticks). Afterwards, capped at
-    requests_per_sim_day_after_genesis (default 1) per 144-tick simulated day.
-    """
+    """Return True if Chubby is permitted to submit a structure request on `tick`."""
     genesis_ticks = int(cfg["genesis"]["genesis_ticks"])
     if tick <= genesis_ticks:
         return True
@@ -26,6 +22,24 @@ def can_request_structure(
     day_start = day_index * ticks_per_day + 1
     day_end = day_start + ticks_per_day - 1
     daily_limit = int(cfg["genesis"]["requests_per_sim_day_after_genesis"])
+
+    structures = db.get_structures(conn)
+    curiosity_keywords = (
+        "periscope",
+        "lookout",
+        "telescope",
+        "scanner",
+        "drafting",
+        "schematic",
+    )
+    if any(
+        any(
+            kw in f"{s.get('name', '')} {s.get('unlocks', '')}".lower()
+            for kw in curiosity_keywords
+        )
+        for s in structures
+    ):
+        daily_limit += 2
 
     existing = db.get_requests_in_tick_range(conn, day_start, day_end)
     return len(existing) < daily_limit
@@ -154,4 +168,3 @@ def reject_request(
         "status": "rejected",
         "reason": reason,
     }
-

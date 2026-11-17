@@ -10,6 +10,7 @@ ALL_CATEGORIES: tuple[str, ...] = (
     "recharge",
     "explore",
     "make",
+    "draw",
     "play",
     "social",
     "reflect",
@@ -29,6 +30,24 @@ def get_allowed_categories(
     blocked = set(recent_categories[-block_last_n:])
     allowed = [cat for cat in ALL_CATEGORIES if cat not in blocked]
     return allowed if allowed else list(ALL_CATEGORIES)
+
+
+def filter_categories_for_state(
+    allowed: list[str], state: Any, recent_categories: list[str]
+) -> list[str]:
+    """Filter redundant passive categories when needs are already satisfied."""
+    filtered = list(allowed)
+    recent_3 = set(recent_categories[-3:])
+    filtered = [
+        c for c in filtered if not (c in recent_3 and c in ("rest", "recharge", "reflect"))
+    ]
+    if float(state.battery) >= 0.78:
+        filtered = [c for c in filtered if c != "recharge"]
+    if float(state.battery) >= 0.75 and float(state.calm) >= 0.82:
+        filtered = [c for c in filtered if c != "rest"]
+    if float(state.calm) >= 0.88:
+        filtered = [c for c in filtered if c != "reflect"]
+    return filtered if len(filtered) >= 4 else list(allowed)
 
 
 def tokenize_words(text: str) -> set[str]:
@@ -95,4 +114,3 @@ def evaluate_antirepeat(
         "max_similarity": round(max_sim, 4),
         "similarity_penalty": sim_repeat,
     }
-
