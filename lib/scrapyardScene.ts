@@ -28,6 +28,7 @@ export type StructureKind =
   | "canopy"
   | "radio"
   | "studio"
+  | "gazebo"
   | "generic";
 
 export interface ChubbyParts {
@@ -406,6 +407,14 @@ export function createProceduralChubby(u: DitherUniforms): {
  */
 export function classifyStructureType(name: string, purpose: string): StructureKind {
   const combined = `${name} ${purpose}`.toLowerCase();
+  if (
+    combined.includes("gazebo") ||
+    combined.includes("pavilion") ||
+    combined.includes("rotunda") ||
+    combined.includes("bandstand")
+  ) {
+    return "gazebo";
+  }
   if (combined.includes("studio") || combined.includes("easel")) {
     return "studio";
   }
@@ -963,6 +972,288 @@ function buildGenericStructure(u: DitherUniforms): THREE.Group {
   return group;
 }
 
+function buildTownGazebo(u: DitherUniforms): THREE.Group {
+  const group = new THREE.Group();
+
+  // Materials
+  const stoneBaseMat = ditherStd({ color: 0x8b8579, roughness: 0.9, metalness: 0.05 }, u);
+  const stoneStepMat = ditherStd({ color: 0xa8a29e, roughness: 0.85 }, u);
+  const deckWoodMat = ditherStd({ color: 0x926239, roughness: 0.75 }, u);
+  const pillarWoodMat = ditherStd({ color: 0xf8fafc, roughness: 0.6, metalness: 0.05 }, u);
+  const trimWoodMat = ditherStd({ color: 0xe2e8f0, roughness: 0.6 }, u);
+  const terracottaRoofMat = ditherStd({ color: 0xb45309, roughness: 0.8 }, u);
+  const cupolaRoofMat = ditherStd({ color: 0x9a3412, roughness: 0.75 }, u);
+  const brassFinialMat = ditherStd({ color: 0xfacc15, roughness: 0.35, metalness: 0.8 }, u);
+  const benchMat = ditherStd({ color: 0x78350f, roughness: 0.85 }, u);
+  const lanternGlassMat = new THREE.MeshBasicMaterial({ color: 0xfef08a });
+
+  // 1. Elevated Octagonal Stone Plinth (Foundation)
+  const baseRadius = 2.4;
+  const plinth = new THREE.Mesh(
+    new THREE.CylinderGeometry(baseRadius, baseRadius + 0.2, 0.3, 8),
+    stoneBaseMat
+  );
+  plinth.position.y = 0.15;
+  plinth.receiveShadow = true;
+  plinth.castShadow = true;
+  group.add(plinth);
+
+  // Wooden deck floor on top of plinth
+  const deck = new THREE.Mesh(
+    new THREE.CylinderGeometry(baseRadius - 0.05, baseRadius - 0.05, 0.06, 8),
+    deckWoodMat
+  );
+  deck.position.y = 0.33;
+  deck.receiveShadow = true;
+  group.add(deck);
+
+  // Entrance Steps leading up from the front (Z = +baseRadius)
+  const stepLower = new THREE.Mesh(
+    new THREE.BoxGeometry(1.2, 0.1, 0.45),
+    stoneStepMat
+  );
+  stepLower.position.set(0, 0.05, baseRadius + 0.35);
+  stepLower.receiveShadow = true;
+  group.add(stepLower);
+
+  const stepUpper = new THREE.Mesh(
+    new THREE.BoxGeometry(1.1, 0.12, 0.35),
+    stoneStepMat
+  );
+  stepUpper.position.set(0, 0.16, baseRadius + 0.12);
+  stepUpper.receiveShadow = true;
+  group.add(stepUpper);
+
+  // 2. Eight Turned Pillars & Decorative Railings
+  const pillarRadius = 2.05;
+  const pillarHeight = 2.2;
+  const numSides = 8;
+  const pillarGeo = new THREE.CylinderGeometry(0.065, 0.075, pillarHeight, 8);
+  const baseBoxGeo = new THREE.BoxGeometry(0.2, 0.22, 0.2);
+  const capBoxGeo = new THREE.BoxGeometry(0.22, 0.12, 0.22);
+
+  const pillarPositions: THREE.Vector3[] = [];
+
+  for (let i = 0; i < numSides; i++) {
+    const angle = (i * Math.PI * 2) / numSides;
+    const px = Math.cos(angle) * pillarRadius;
+    const pz = Math.sin(angle) * pillarRadius;
+    const pos = new THREE.Vector3(px, 0.36, pz);
+    pillarPositions.push(pos);
+
+    // Pillar pedestal base
+    const pBase = new THREE.Mesh(baseBoxGeo, stoneBaseMat);
+    pBase.position.set(px, 0.47, pz);
+    pBase.castShadow = true;
+    group.add(pBase);
+
+    // Turned wooden column
+    const pillar = new THREE.Mesh(pillarGeo, pillarWoodMat);
+    pillar.position.set(px, 0.36 + pillarHeight / 2, pz);
+    pillar.castShadow = true;
+    group.add(pillar);
+
+    // Capital top block
+    const pCap = new THREE.Mesh(capBoxGeo, trimWoodMat);
+    pCap.position.set(px, 0.36 + pillarHeight + 0.06, pz);
+    pCap.castShadow = true;
+    group.add(pCap);
+  }
+
+  // Railings between pillars (leaving front entrance open)
+  for (let i = 0; i < numSides; i++) {
+    const nextIdx = (i + 1) % numSides;
+    const p1 = pillarPositions[i];
+    const p2 = pillarPositions[nextIdx];
+
+    // Check if this is the front entrance gap
+    const midZ = (p1.z + p2.z) / 2;
+    if (midZ > 1.6) {
+      continue;
+    }
+
+    const midX = (p1.x + p2.x) / 2;
+    const midY = 0.85; // Handrail height
+    const dir = new THREE.Vector3().subVectors(p2, p1);
+    const segLen = dir.length();
+    const rotY = Math.atan2(dir.x, dir.z);
+
+    // Top handrail
+    const topRail = new THREE.Mesh(
+      new THREE.BoxGeometry(0.08, 0.06, segLen),
+      trimWoodMat
+    );
+    topRail.position.set(midX, midY, midZ);
+    topRail.rotation.y = rotY;
+    topRail.castShadow = true;
+    group.add(topRail);
+
+    // Bottom rail
+    const botRail = new THREE.Mesh(
+      new THREE.BoxGeometry(0.06, 0.05, segLen),
+      trimWoodMat
+    );
+    botRail.position.set(midX, 0.52, midZ);
+    botRail.rotation.y = rotY;
+    group.add(botRail);
+
+    // Vertical balusters / spindles
+    const balusterCount = 4;
+    for (let b = 1; b <= balusterCount; b++) {
+      const t = b / (balusterCount + 1);
+      const bx = p1.x + dir.x * t;
+      const bz = p1.z + dir.z * t;
+      const baluster = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.02, 0.02, 0.32, 6),
+        pillarWoodMat
+      );
+      baluster.position.set(bx, 0.69, bz);
+      group.add(baluster);
+    }
+
+    // Built-in bench inside along rear segments
+    if (midZ < -0.4) {
+      const bench = new THREE.Mesh(
+        new THREE.BoxGeometry(0.35, 0.06, segLen * 0.9),
+        benchMat
+      );
+      const inX = midX * 0.82;
+      const inZ = midZ * 0.82;
+      bench.position.set(inX, 0.68, inZ);
+      bench.rotation.y = rotY;
+      bench.castShadow = true;
+      group.add(bench);
+    }
+  }
+
+  // 3. Eaves architrave ring connecting tops of pillars
+  const eaveRing = new THREE.Mesh(
+    new THREE.CylinderGeometry(pillarRadius + 0.15, pillarRadius + 0.15, 0.12, 8),
+    trimWoodMat
+  );
+  eaveRing.position.y = 0.36 + pillarHeight + 0.06;
+  eaveRing.castShadow = true;
+  group.add(eaveRing);
+
+  // 4. Double-Tiered Flared Terracotta / Pagoda Roof
+  const lowerRoof = new THREE.Mesh(
+    new THREE.ConeGeometry(baseRadius + 0.45, 1.1, 8),
+    terracottaRoofMat
+  );
+  lowerRoof.position.y = 0.36 + pillarHeight + 0.65;
+  lowerRoof.castShadow = true;
+  group.add(lowerRoof);
+
+  // Roof eave trim overhang
+  const roofRim = new THREE.Mesh(
+    new THREE.CylinderGeometry(baseRadius + 0.48, baseRadius + 0.52, 0.08, 8),
+    trimWoodMat
+  );
+  roofRim.position.y = 0.36 + pillarHeight + 0.14;
+  group.add(roofRim);
+
+  // Upper cupola lantern turret
+  const cupolaBase = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.65, 0.72, 0.45, 8),
+    pillarWoodMat
+  );
+  cupolaBase.position.y = 0.36 + pillarHeight + 1.25;
+  cupolaBase.castShadow = true;
+  group.add(cupolaBase);
+
+  // Cupola louvers/slats
+  const cupolaLouver = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.62, 0.62, 0.3, 8),
+    trimWoodMat
+  );
+  cupolaLouver.position.y = 0.36 + pillarHeight + 1.25;
+  group.add(cupolaLouver);
+
+  // Cupola peaked roof cap
+  const cupolaRoof = new THREE.Mesh(
+    new THREE.ConeGeometry(0.85, 0.65, 8),
+    cupolaRoofMat
+  );
+  cupolaRoof.position.y = 0.36 + pillarHeight + 1.75;
+  cupolaRoof.castShadow = true;
+  group.add(cupolaRoof);
+
+  // Golden Brass Spire / Finial on top
+  const spire = new THREE.Mesh(
+    new THREE.ConeGeometry(0.06, 0.4, 6),
+    brassFinialMat
+  );
+  spire.position.y = 0.36 + pillarHeight + 2.22;
+  spire.castShadow = true;
+  group.add(spire);
+
+  const spireBall = new THREE.Mesh(
+    new THREE.SphereGeometry(0.09, 8, 8),
+    brassFinialMat
+  );
+  spireBall.position.y = 0.36 + pillarHeight + 2.05;
+  group.add(spireBall);
+
+  // 5. Hanging Warm Brass Lantern in Center
+  const lanternChain = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.012, 0.012, 0.65, 4),
+    trimWoodMat
+  );
+  lanternChain.position.set(0, 0.36 + pillarHeight - 0.2, 0);
+  group.add(lanternChain);
+
+  const lanternCap = new THREE.Mesh(
+    new THREE.ConeGeometry(0.18, 0.12, 6),
+    brassFinialMat
+  );
+  lanternCap.position.set(0, 0.36 + pillarHeight - 0.5, 0);
+  group.add(lanternCap);
+
+  const lanternGlass = new THREE.Mesh(
+    new THREE.SphereGeometry(0.12, 8, 8),
+    lanternGlassMat
+  );
+  lanternGlass.position.set(0, 0.36 + pillarHeight - 0.62, 0);
+  group.add(lanternGlass);
+
+  const lanternBase = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.08, 0.14, 0.08, 6),
+    brassFinialMat
+  );
+  lanternBase.position.set(0, 0.36 + pillarHeight - 0.74, 0);
+  group.add(lanternBase);
+
+  // 6. Planter Boxes flanking the entrance
+  const potGeo = new THREE.CylinderGeometry(0.2, 0.14, 0.32, 8);
+  const foliageGeo = new THREE.SphereGeometry(0.24, 6, 6);
+  const potMat = ditherStd({ color: 0x9a3412, roughness: 0.8 }, u);
+  const foliageMat = ditherStd({ color: 0x15803d, roughness: 0.7 }, u);
+  const flowerMatRed = new THREE.MeshBasicMaterial({ color: 0xef4444 });
+  const flowerMatYellow = new THREE.MeshBasicMaterial({ color: 0xfacc15 });
+
+  for (const side of [-1, 1]) {
+    const pot = new THREE.Mesh(potGeo, potMat);
+    pot.position.set(side * 0.95, 0.16, baseRadius + 0.35);
+    pot.castShadow = true;
+    group.add(pot);
+
+    const foliage = new THREE.Mesh(foliageGeo, foliageMat);
+    foliage.position.set(side * 0.95, 0.42, baseRadius + 0.35);
+    foliage.scale.set(1.1, 0.9, 1.1);
+    group.add(foliage);
+
+    const fl1 = new THREE.Mesh(new THREE.SphereGeometry(0.05, 4, 4), flowerMatRed);
+    fl1.position.set(side * 0.95 + 0.08, 0.54, baseRadius + 0.38);
+    group.add(fl1);
+
+    const fl2 = new THREE.Mesh(new THREE.SphereGeometry(0.05, 4, 4), flowerMatYellow);
+    fl2.position.set(side * 0.95 - 0.07, 0.52, baseRadius + 0.32);
+    group.add(fl2);
+  }
+
+  return group;
+}
+
 const STRUCTURE_BUILDERS: Record<StructureKind, (u: DitherUniforms) => THREE.Group> = {
   periscope: buildFencePeriscope,
   scanner: buildSalvageScannerTable,
@@ -975,6 +1266,7 @@ const STRUCTURE_BUILDERS: Record<StructureKind, (u: DitherUniforms) => THREE.Gro
   canopy: buildRainShelterCanopy,
   radio: buildTinyRadioCorner,
   studio: buildArtStudioMarker,
+  gazebo: buildTownGazebo,
   generic: buildGenericStructure,
 };
 

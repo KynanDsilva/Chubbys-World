@@ -726,8 +726,9 @@ export default function ChubbyWorld(): React.ReactElement {
         const matchesCat =
           ((kind === "periscope" || kind === "scanner") && (cat === "explore" || cat === "reflect")) ||
           ((kind === "workbench" || kind === "scanner") && cat === "make") ||
-          ((kind === "canopy" || kind === "zen" || kind === "lights") && cat === "rest") ||
-          ((kind === "radio" || kind === "chime" || kind === "lights") && cat === "social");
+          ((kind === "canopy" || kind === "gazebo" || kind === "zen" || kind === "lights") && cat === "rest") ||
+          ((kind === "radio" || kind === "gazebo" || kind === "chime" || kind === "lights") && cat === "social") ||
+          (kind === "gazebo" && cat === "reflect");
         if (matchesCat) {
           matchingEntries.push(entry);
         }
