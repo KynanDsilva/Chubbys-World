@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import os
 import random
 import re
 import sqlite3
@@ -21,6 +22,7 @@ from urllib.parse import urlparse
 import db
 import events
 import genesis
+import llm
 import main as sim_main
 import state
 
