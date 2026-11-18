@@ -1,4 +1,5 @@
 [llm]
+provider = "auto"
 base_url = "http://localhost:11434"
 model = "qwen3:4b"
 temperature = 0.9
@@ -7,6 +8,8 @@ think = false
 keep_alive = "15m"
 max_retries = 2
 timeout_seconds = 120
+groq_base_url = "https://api.groq.com/openai/v1"
+groq_model = "qwen/qwen3.8-27b"
 
 [clock]
 tick_interval_seconds = 30.0

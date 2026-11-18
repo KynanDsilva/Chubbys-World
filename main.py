@@ -393,7 +393,11 @@ def build_llm_client(
     policy: str, cfg: dict[str, Any], conn: sqlite3.Connection, rng: random.Random
 ) -> Any:
     """Instantiate the requested LLM or local policy client."""
+    if policy == "groq":
+        return llm.GroqClient(cfg, conn=conn)
     if policy == "llm":
+        if llm.is_groq_configured(cfg):
+            return llm.GroqClient(cfg, conn=conn)
         return llm.OllamaClient(cfg, conn=conn)
     if policy == "mock":
         return llm.MockLLMClient(cfg, seed=rng.randint(0, 1_000_000))
@@ -416,9 +420,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--policy",
-        choices=("llm", "random", "mock"),
+        choices=("llm", "groq", "random", "mock"),
         default="llm",
-        help="Decision policy: llm (Ollama), mock (deterministic local), or random",
+        help="Decision policy: llm (auto-Groq/Ollama), groq (cloud LPU), mock, or random",
     )
     parser.add_argument("--seed", type=int, default=None, help="Random seed")
     parser.add_argument("--db", default=None, help="SQLite database path")

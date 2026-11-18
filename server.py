@@ -167,26 +167,34 @@ class WorldController:
         """Run exactly one simulation tick safely and return the tick result plus snapshot."""
         with self._tick_lock:
             chosen_policy = policy or self.policy
-            if chosen_policy not in ("llm", "mock", "random"):
+            if chosen_policy not in ("llm", "groq", "mock", "random"):
                 raise ValueError(f"Unsupported policy: {chosen_policy}")
 
             active_policy = chosen_policy
             effective_label = chosen_policy
-            if chosen_policy == "llm":
-                base_url = str(self.cfg["llm"]["base_url"])
-                if not _is_ollama_reachable(base_url):
-                    active_policy = "mock"
-                    effective_label = "mock (ollama offline)"
-                    if not self._logged_offline_fallback:
-                        print(
-                            f"[server] Ollama not reachable at {base_url}; "
-                            "falling back to 'mock' policy until Ollama comes online."
-                        )
-                        self._logged_offline_fallback = True
+            if chosen_policy in ("llm", "groq"):
+                if llm.is_groq_configured(self.cfg) or chosen_policy == "groq":
+                    active_policy = "llm" if chosen_policy == "llm" else "groq"
+                    model_name = (
+                        os.environ.get("GROQ_MODEL")
+                        or self.cfg.get("llm", {}).get("groq_model", "qwen/qwen3.8-27b")
+                    )
+                    effective_label = f"groq ({model_name})"
                 else:
-                    if self._logged_offline_fallback:
-                        print(f"[server] Ollama detected at {base_url}; resuming 'llm' policy.")
-                    self._logged_offline_fallback = False
+                    base_url = str(self.cfg["llm"]["base_url"])
+                    if not _is_ollama_reachable(base_url):
+                        active_policy = "mock"
+                        effective_label = "mock (ollama offline)"
+                        if not self._logged_offline_fallback:
+                            print(
+                                f"[server] Ollama not reachable at {base_url}; "
+                                "falling back to 'mock' policy until Ollama comes online (or add GROQ_API_KEY to .env)."
+                            )
+                            self._logged_offline_fallback = True
+                    else:
+                        if self._logged_offline_fallback:
+                            print(f"[server] Ollama detected at {base_url}; resuming 'llm' policy.")
+                        self._logged_offline_fallback = False
 
             with self._state_lock:
                 self._tick_in_progress = True
@@ -223,7 +231,7 @@ class WorldController:
         thread_to_join: threading.Thread | None = None
         with self._state_lock:
             if policy is not None:
-                if policy not in ("llm", "mock", "random"):
+                if policy not in ("llm", "groq", "mock", "random"):
                     raise ValueError(f"Unsupported policy: {policy}")
                 self.policy = policy
                 self._effective_policy = policy
@@ -485,7 +493,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--config", default=None, help="Path to config.toml")
     parser.add_argument(
         "--policy",
-        choices=("llm", "mock", "random"),
+        choices=("llm", "groq", "mock", "random"),
         default="llm",
         help="Default tick policy",
     )

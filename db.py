@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import tomllib
 from pathlib import Path
@@ -11,8 +12,29 @@ from typing import Any
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config.toml"
 
 
+def load_dotenv(env_path: str | Path | None = None) -> None:
+    """Load key-value pairs from a .env file into os.environ if not already set."""
+    p = Path(env_path) if env_path is not None else Path(__file__).resolve().parent / ".env"
+    if not p.is_file():
+        return
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip("'\"")
+                if k and k not in os.environ:
+                    os.environ[k] = v
+    except Exception:
+        pass
+
+
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
-    """Load TOML configuration from disk."""
+    """Load TOML configuration from disk and load .env if present."""
+    load_dotenv()
     cfg_path = Path(path) if path is not None else DEFAULT_CONFIG_PATH
     with cfg_path.open("rb") as f:
         return tomllib.load(f)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import random
 import sqlite3
 import urllib.error
@@ -414,24 +415,23 @@ def build_fallback_referee(category: str) -> RefereeOutputSchema:
     )
 
 
-class OllamaClient:
-    """Local Ollama chat client with schema-constrained output, retries, and failure logging."""
+def is_groq_configured(cfg: dict[str, Any] | None = None) -> bool:
+    """Return True if a non-placeholder GROQ_API_KEY is present in the environment or config."""
+    cfg = cfg or {}
+    key = (
+        os.environ.get("GROQ_API_KEY", "").strip()
+        or str(cfg.get("llm", {}).get("groq_api_key", "")).strip()
+    )
+    return bool(key and key != "your_groq_api_key_here")
 
-    def __init__(
-        self, cfg: dict[str, Any], conn: sqlite3.Connection | None = None
-    ) -> None:
-        self.cfg = cfg
-        self.conn = conn
-        llm_cfg = cfg["llm"]
-        self.base_url = str(llm_cfg["base_url"]).rstrip("/")
-        self.model = str(llm_cfg["model"])
-        self.temperature = float(llm_cfg["temperature"])
-        self.num_ctx = int(llm_cfg["num_ctx"])
-        self.think = bool(llm_cfg["think"])
-        self.keep_alive = str(llm_cfg["keep_alive"])
-        self.max_retries = int(llm_cfg["max_retries"])
-        self.timeout_seconds = float(llm_cfg["timeout_seconds"])
-        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+class _BaseHTTPLLMClient:
+    """Base HTTP LLM client providing retry logic, Pydantic schema validation, and fallbacks."""
+
+    cfg: dict[str, Any]
+    conn: sqlite3.Connection | None
+    max_retries: int
+    timeout_seconds: float
 
     def _post_chat(
         self,
@@ -439,27 +439,7 @@ class OllamaClient:
         schema: dict[str, Any],
         temperature: float | None = None,
     ) -> str:
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "stream": False,
-            "format": schema,
-            "think": self.think,
-            "keep_alive": self.keep_alive,
-            "options": {
-                "temperature": self.temperature if temperature is None else temperature,
-                "num_ctx": self.num_ctx,
-            },
-        }
-        req = urllib.request.Request(
-            f"{self.base_url}/api/chat",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with self._opener.open(req, timeout=self.timeout_seconds) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-        return str(body["message"]["content"])
+        raise NotImplementedError
 
     def _log_failure(self, tick: int, stage: str, attempt: int, error: str) -> None:
         if self.conn is None:
@@ -504,7 +484,7 @@ class OllamaClient:
         tick: int,
         context: dict[str, Any] | None = None,
     ) -> tuple[BaseModel, bool]:
-        """Request Chubby's decision from Ollama, falling back safely if retries fail."""
+        """Request Chubby's decision from the LLM, falling back safely if retries fail."""
         result = self._call_with_retries(
             messages, decision_model, tick=tick, stage="decision"
         )
@@ -523,7 +503,7 @@ class OllamaClient:
         tick: int,
         context: dict[str, Any] | None = None,
     ) -> tuple[RefereeOutputSchema, bool]:
-        """Request the Referee resolution from Ollama, with fallback on failure."""
+        """Request the Referee resolution from the LLM, with fallback on failure."""
         result = self._call_with_retries(
             messages,
             RefereeOutputSchema,
@@ -580,6 +560,125 @@ class OllamaClient:
         if self.conn is not None:
             db.insert_event(self.conn, tick, "llm_fallback", {"stage": "drawing"})
         return safe_procedural_drawing(seed, intent=intent)
+
+
+class OllamaClient(_BaseHTTPLLMClient):
+    """Local Ollama chat client with schema-constrained output, retries, and failure logging."""
+
+    def __init__(
+        self, cfg: dict[str, Any], conn: sqlite3.Connection | None = None
+    ) -> None:
+        self.cfg = cfg
+        self.conn = conn
+        llm_cfg = cfg.get("llm", {})
+        self.base_url = str(llm_cfg.get("base_url", "http://localhost:11434")).rstrip("/")
+        self.model = str(llm_cfg.get("model", "qwen3:4b"))
+        self.temperature = float(llm_cfg.get("temperature", 0.9))
+        self.num_ctx = int(llm_cfg.get("num_ctx", 4096))
+        self.think = bool(llm_cfg.get("think", False))
+        self.keep_alive = str(llm_cfg.get("keep_alive", "15m"))
+        self.max_retries = int(llm_cfg.get("max_retries", 2))
+        self.timeout_seconds = float(llm_cfg.get("timeout_seconds", 120))
+        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    def _post_chat(
+        self,
+        messages: list[dict[str, str]],
+        schema: dict[str, Any],
+        temperature: float | None = None,
+    ) -> str:
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "stream": False,
+            "format": schema,
+            "think": self.think,
+            "keep_alive": self.keep_alive,
+            "options": {
+                "temperature": self.temperature if temperature is None else temperature,
+                "num_ctx": self.num_ctx,
+            },
+        }
+        req = urllib.request.Request(
+            f"{self.base_url}/api/chat",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with self._opener.open(req, timeout=self.timeout_seconds) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        return str(body["message"]["content"])
+
+
+class GroqClient(_BaseHTTPLLMClient):
+    """Cloud Groq LPU client for fast, zero-lag inference on Qwen/Llama models."""
+
+    def __init__(
+        self, cfg: dict[str, Any], conn: sqlite3.Connection | None = None
+    ) -> None:
+        self.cfg = cfg
+        self.conn = conn
+        llm_cfg = cfg.get("llm", {})
+        self.api_key = (
+            os.environ.get("GROQ_API_KEY", "").strip()
+            or str(llm_cfg.get("groq_api_key", "")).strip()
+        )
+        self.base_url = str(
+            os.environ.get("GROQ_BASE_URL", "")
+            or llm_cfg.get("groq_base_url", "https://api.groq.com/openai/v1")
+        ).rstrip("/")
+        self.model = str(
+            os.environ.get("GROQ_MODEL", "")
+            or llm_cfg.get("groq_model", "qwen/qwen3.8-27b")
+        ).strip()
+        self.temperature = float(llm_cfg.get("temperature", 0.7))
+        self.max_retries = int(llm_cfg.get("max_retries", 2))
+        self.timeout_seconds = float(llm_cfg.get("timeout_seconds", 30))
+        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    def _post_chat(
+        self,
+        messages: list[dict[str, str]],
+        schema: dict[str, Any],
+        temperature: float | None = None,
+    ) -> str:
+        if not self.api_key or self.api_key == "your_groq_api_key_here":
+            raise ValueError(
+                "GROQ_API_KEY is not configured. Put your Groq API key into .env"
+            )
+
+        formatted_messages = [dict(m) for m in messages]
+        schema_note = (
+            f"\n\nJSON Schema Requirement: Respond with a single valid JSON object strictly conforming to this schema:\n"
+            f"{json.dumps(schema)}"
+        )
+        if formatted_messages and formatted_messages[0]["role"] == "system":
+            formatted_messages[0]["content"] += schema_note
+        else:
+            formatted_messages.insert(0, {"role": "system", "content": schema_note.strip()})
+
+        payload = {
+            "model": self.model,
+            "messages": formatted_messages,
+            "response_format": {"type": "json_object"},
+            "temperature": self.temperature if temperature is None else temperature,
+        }
+        req = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+                "User-Agent": "ChubbyBot/1.0",
+            },
+            method="POST",
+        )
+        with self._opener.open(req, timeout=self.timeout_seconds) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        choices = body.get("choices", [])
+        if not choices:
+            raise ValueError(f"Empty choices in Groq response: {body}")
+        return str(choices[0]["message"]["content"])
 
 
 class MockLLMClient:

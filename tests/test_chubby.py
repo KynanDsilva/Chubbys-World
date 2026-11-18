@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import random
 import sys
 import tempfile
@@ -672,6 +673,59 @@ class TestDrawing(unittest.TestCase):
         db.init_db(conn)
         self.assertEqual(len(db.get_structures(conn)), 1)
         conn.close()
+
+    def test_groq_client_configuration_and_mock_response(self) -> None:
+        cfg = dict(self.cfg)
+        cfg["llm"] = dict(self.cfg.get("llm", {}))
+
+        cfg["llm"]["groq_api_key"] = "your_groq_api_key_here"
+        old_env = os.environ.get("GROQ_API_KEY")
+        try:
+            if "GROQ_API_KEY" in os.environ:
+                del os.environ["GROQ_API_KEY"]
+            self.assertFalse(llm.is_groq_configured(cfg))
+            client = llm.GroqClient(cfg)
+            with self.assertRaises(ValueError):
+                client._post_chat([], {})
+
+            cfg["llm"]["groq_api_key"] = "gsk_test_key_12345"
+            self.assertTrue(llm.is_groq_configured(cfg))
+            client = llm.GroqClient(cfg)
+
+            class _FakeResp:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    pass
+
+                def read(self):
+                    return json.dumps({
+                        "choices": [{
+                            "message": {
+                                "content": json.dumps({
+                                    "thought": "Thinking fast on Groq!",
+                                    "intent": "Wander over to inspect the cobblestones.",
+                                    "category": "explore",
+                                    "diary_entry": None,
+                                })
+                            }
+                        }]
+                    }).encode("utf-8")
+
+            class _FakeOpener:
+                def open(self, req, timeout=30):
+                    return _FakeResp()
+
+            client._opener = _FakeOpener()
+            m = llm.build_decision_model(["explore"], False, False)
+            dec, fb = client.decide([], m, ["explore"], tick=1)
+            self.assertFalse(fb)
+            self.assertEqual(dec.category, "explore")
+            self.assertIn("Groq", dec.thought)
+        finally:
+            if old_env is not None:
+                os.environ["GROQ_API_KEY"] = old_env
 
 
 if __name__ == "__main__":    unittest.main()
